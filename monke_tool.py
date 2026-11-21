@@ -1340,9 +1340,9 @@ def launch_game(client_name: str, user: User, server: str,
         package = resolve_package(client_name)
 
         # Kill the app first - a stuck/frozen client won't process the
-        # join intent, so force-stop before relaunching
+        # join intent, so kill the process before relaunching
         execute_command(
-            f"{shell_prefix()} 'am force-stop {package}'",
+            f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
             "kill app"
         )
 
@@ -1543,7 +1543,20 @@ def monitor_all_users(config: Config):
         return
     
     show_message("Starting Monitoring", "bold blue", 1)
-    
+
+    # Kill all configured Roblox clients first so monitoring starts clean
+    killed = set()
+    for user in config.users:
+        package = resolve_package(user.client_name)
+        if package and package not in killed:
+            killed.add(package)
+            execute_command(
+                f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
+                f"kill {package}"
+            )
+    if killed:
+        time.sleep(2)
+
     # Initial launches
     for user in config.users:
         initial_launch(user, config)
