@@ -507,7 +507,9 @@ def auto_setup(config: Config):
             stderr=subprocess.PIPE
         )
 
-        if result.returncode != 0:
+        # The while-loop's exit status is the last grep's status, so a
+        # non-zero returncode is expected when packages were still found.
+        if result.returncode != 0 and not result.stdout.strip():
             logger.error(f"Error listing packages: {result.stderr}")
             show_message(f"Error: {result.stderr}", "red")
             return
