@@ -500,14 +500,13 @@ def auto_setup(config: Config):
             "while read p; do dumpsys package \"$p\" 2>/dev/null | "
             "grep -q 'com\\.roblox\\.client' && echo \"$p\"; done",
             shell=True,
-            capture_output=True,
             text=True,
             timeout=120,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
-        
+
         if result.returncode != 0:
             logger.error(f"Error listing packages: {result.stderr}")
             show_message(f"Error: {result.stderr}", "red")
