@@ -495,26 +495,31 @@ def auto_setup(config: Config):
     console.print()
     
     try:
+        # Find Roblox apps by their LocalStorage file - only Roblox packages
+        # have /data/data/<pkg>/files/appData/LocalStorage/appStorage.json.
+        # dumpsys/pm can't detect renamed clones without root, so we glob
+        # the storage path directly via su instead.
         result = subprocess.run(
-            "pm list packages -3 | sed 's/package://' | "
-            "while read p; do dumpsys package \"$p\" 2>/dev/null | "
-            "grep -q 'com\\.roblox\\.client' && echo \"$p\"; done",
+            "su -c 'ls /data/data/*/files/appData/LocalStorage/appStorage.json 2>/dev/null'",
             shell=True,
             text=True,
-            timeout=120,
+            timeout=30,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
 
-        # The while-loop's exit status is the last grep's status, so a
-        # non-zero returncode is expected when packages were still found.
-        if result.returncode != 0 and not result.stdout.strip():
+        if result.returncode != 0:
             logger.error(f"Error listing packages: {result.stderr}")
             show_message(f"Error: {result.stderr}", "red")
             return
-        
-        packages = result.stdout.strip().splitlines()
+
+        packages = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split("/")
+            # Expected: /data/data/<package>/files/appData/LocalStorage/appStorage.json
+            if len(parts) >= 4 and parts[1] == "data" and parts[2] == "data":
+                packages.append(parts[3])
         if not packages:
             show_message("No Roblox packages found", "yellow")
             return
