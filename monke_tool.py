@@ -1298,11 +1298,11 @@ def launch_roblox(client_name: str, user: User, server: str,
 
         time.sleep(5)
 
-        # Join server
+        # Join server (VIEW action required or Roblox ignores the deep link)
         if server.isdigit():
-            join_cmd = f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
         else:
-            join_cmd = f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
         
         if not execute_command(join_cmd, "join game"):
             return
@@ -1387,11 +1387,11 @@ def restart_roblox(client_name: str, user: User, users: List[User],
 
         time.sleep(5)
 
-        # Force restart target
+        # Force restart target (VIEW action required or Roblox ignores the deep link)
         if server.isdigit():
-            join_cmd = f"{shell_prefix()} 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
+            join_cmd = f"{shell_prefix()} 'am start -S -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
         else:
-            join_cmd = f"{shell_prefix()} 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
+            join_cmd = f"{shell_prefix()} 'am start -S -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
         
         if not execute_command(join_cmd, "restart app"):
             return
