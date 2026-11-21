@@ -71,6 +71,34 @@ def resolve_package(client_name: str) -> str:
         return client_name
     return f"com.roblox.{client_name}"
 
+
+_ROOT_SHELL = None
+
+def shell_prefix() -> str:
+    """Return the root-shell prefix for device commands ('su -c', 'vu -c', ...).
+
+    Some devices (e.g. cloud phones) have no 'su' binary but ship an
+    alternative like /system/bin/vu that provides root. Probe candidates
+    once and cache the first one that yields uid=0.
+    """
+    global _ROOT_SHELL
+    if _ROOT_SHELL is None:
+        for cand in ("su", "/system/bin/vu", "/system/bin/su", "/mnt/.xu/su"):
+            try:
+                r = subprocess.run(
+                    [cand, "-c", "id"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if r.returncode == 0 and "uid=0" in r.stdout:
+                    _ROOT_SHELL = f"{cand} -c"
+                    break
+            except Exception:
+                continue
+        if _ROOT_SHELL is None:
+            _ROOT_SHELL = "su -c"
+        logger.info(f"Root shell: {_ROOT_SHELL}")
+    return _ROOT_SHELL
+
 # Serialization keys
 SERIALIZED_CONFIG_KEYS: Set[str] = frozenset([
     "users", "check_interval", "double_check_interval", "double_check_count",
@@ -449,7 +477,7 @@ def auto_setup(config: Config):
         # dumpsys/pm can't detect renamed clones without root, so we glob
         # the storage path directly via su instead.
         result = subprocess.run(
-            "su -c 'ls /data/data/*/files/appData/LocalStorage/appStorage.json 2>/dev/null'",
+            f"{shell_prefix()} 'ls /data/data/*/files/appData/LocalStorage/appStorage.json 2>/dev/null'",
             shell=True,
             text=True,
             timeout=30,
@@ -529,7 +557,7 @@ def auto_setup(config: Config):
             try:
                 # Read appStorage.json with proper subprocess configuration
                 result = subprocess.run(
-                    f"su -c 'cat {json_path}'",
+                    f"{shell_prefix()} 'cat {json_path}'",
                     shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1202,7 +1230,7 @@ def check_process_running(client_name: str) -> bool:
     
     try:
         result = subprocess.run(
-            f"su -c 'pidof {resolve_package(client_name)}'",
+            f"{shell_prefix()} 'pidof {resolve_package(client_name)}'",
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1263,7 +1291,7 @@ def launch_roblox(client_name: str, user: User, server: str,
         # Start main activity
         package = resolve_package(client_name)
         if not execute_command(
-            f"su -c 'am start -a android.intent.action.MAIN {package}'",
+            f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
             "start app"
         ):
             return
@@ -1272,9 +1300,9 @@ def launch_roblox(client_name: str, user: User, server: str,
 
         # Join server
         if server.isdigit():
-            join_cmd = f"su -c 'am start -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
+            join_cmd = f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
         else:
-            join_cmd = f"su -c 'am start -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
+            join_cmd = f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
         
         if not execute_command(join_cmd, "join game"):
             return
@@ -1313,7 +1341,7 @@ def launch_game(client_name: str, user: User, server: str,
 
         # Bring to foreground
         if not execute_command(
-            f"su -c 'am start -n {package}/{ROBLOX_ACTIVITY}'",
+            f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY}'",
             "foreground"
         ):
             return
@@ -1322,9 +1350,9 @@ def launch_game(client_name: str, user: User, server: str,
 
         # Join game
         if server.isdigit():
-            join_cmd = f"su -c 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
         else:
-            join_cmd = f"su -c 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
         
         execute_command(join_cmd, "join game")
         
@@ -1353,7 +1381,7 @@ def restart_roblox(client_name: str, user: User, users: List[User],
         package = resolve_package(client_name)
 
         execute_command(
-            f"su -c 'am start -a android.intent.action.MAIN {next_package}'",
+            f"{shell_prefix()} 'am start -a android.intent.action.MAIN {next_package}'",
             "switch app"
         )
 
@@ -1361,9 +1389,9 @@ def restart_roblox(client_name: str, user: User, users: List[User],
 
         # Force restart target
         if server.isdigit():
-            join_cmd = f"su -c 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
+            join_cmd = f"{shell_prefix()} 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
         else:
-            join_cmd = f"su -c 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
+            join_cmd = f"{shell_prefix()} 'am start -S -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
         
         if not execute_command(join_cmd, "restart app"):
             return
@@ -1571,7 +1599,7 @@ def take_screenshot() -> Optional[Path]:
             screenshot = Path(f.name)
         
         result = subprocess.run(
-            f"su -c 'screencap {screenshot}'",
+            f"{shell_prefix()} 'screencap {screenshot}'",
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
