@@ -7,6 +7,8 @@ Automatically monitors and rejoins Roblox games if disconnected or crashed.
 import json
 import logging
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -78,7 +80,7 @@ SERIALIZED_CONFIG_KEYS: Set[str] = frozenset([
 ])
 
 SERIALIZED_USER_KEYS: Set[str] = frozenset([
-    "username", "user_id", "server", "client_name"
+    "username", "user_id", "server", "client_name", "cookie"
 ])
 
 # Change working directory
@@ -240,6 +242,7 @@ class User:
     user_id: str = ""
     server: str = ""
     client_name: str = ""
+    cookie: str = ""
     start_time: float = None
     launch_attempts: int = 0
     last_check: float = None
@@ -419,6 +422,54 @@ def validate_server_input(server: str) -> bool:
         return True
     return False
 
+def get_roblosecurity(package: str) -> str:
+    """Extract the .ROBLOSECURITY cookie from an app's WebView cookie store.
+
+    The cookie lives in an Android WebView SQLite DB at
+    /data/data/<package>/app_webview/Default/Cookies. We copy it (plus
+    WAL/SHM sidecars) to a temp dir via su, then read it with sqlite3.
+    Returns the cookie value or "" on failure.
+    """
+    package = resolve_package(package)
+    if not package:
+        return ""
+
+    base = f"/data/data/{package}/app_webview/Default"
+    tmpdir = Path(tempfile.mkdtemp(prefix="monke_cookies_"))
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            remote = f"{base}/Cookies{suffix}"
+            local = tmpdir / f"Cookies{suffix}"
+            result = subprocess.run(
+                f"su -c 'cat {remote}'",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                timeout=15
+            )
+            if result.returncode == 0 and result.stdout:
+                local.write_bytes(result.stdout)
+
+        db = tmpdir / "Cookies"
+        if not db.exists():
+            return ""
+
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT value FROM cookies WHERE name='.ROBLOSECURITY' LIMIT 1"
+            ).fetchone()
+            return row[0] if row else ""
+        finally:
+            conn.close()
+
+    except Exception as e:
+        logger.error(f"Failed to read cookies for {package}: {e}")
+        return ""
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
 def auto_setup(config: Config):
     """Automatically detect and add Roblox clients."""
     logger.info("Starting auto setup")
@@ -575,11 +626,13 @@ def auto_setup(config: Config):
                     time.sleep(1)
                 
                 # Add user
+                cookie = get_roblosecurity(client_name)
                 new_user = User(
                     username=username,
                     user_id=user_id,
                     server=server,
                     client_name=client_name,
+                    cookie=cookie,
                 )
                 new_user.update_user_info()
                 config.users.append(new_user)
@@ -589,6 +642,10 @@ def auto_setup(config: Config):
                 banner()
                 console.print()
                 print_centered(f"✓ Added {username} successfully!", "green")
+                print_centered(
+                    f"Cookie (.ROBLOSECURITY): {'found' if cookie else 'not found'}",
+                    "green" if cookie else "yellow"
+                )
                 wait_for_input()
                 
             except json.JSONDecodeError:
@@ -679,6 +736,7 @@ def add_user(config: Config):
         user_id=identifier if identifier.isdigit() else "",
         server=server,
         client_name=client_name,
+        cookie=get_roblosecurity(client_name),
     )
     
     new_user.update_user_info()
@@ -832,6 +890,9 @@ def edit_user(config: Config):
         user_id=new_identifier if new_identifier.isdigit() else "",
         server=new_server,
         client_name=new_client,
+        cookie=(user.cookie
+                if resolve_package(new_client) == resolve_package(user.client_name)
+                else get_roblosecurity(new_client)),
     )
     
     updated.update_user_info()
