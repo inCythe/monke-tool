@@ -30,7 +30,7 @@ Monke Tool monitors your Roblox accounts and automatically rejoins them into the
 ## 🚀 Quick Install (One-Liner)
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/USERNAME/REPO/main/install.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/inCythe/monke-tool/main/install.sh" | bash
 ```
 
 The installer will:
@@ -53,7 +53,7 @@ yes | pkg update -y && yes | pkg upgrade -y && yes | termux-setup-storage && pkg
 ### 2. Download the tool
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/USERNAME/REPO/main/monke_tool.py" -o monke_tool.py
+curl -fsSL "https://raw.githubusercontent.com/inCythe/monke-tool/main/monke_tool.py" -o monke_tool.py
 ```
 
 ### 3. Run it
