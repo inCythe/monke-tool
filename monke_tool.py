@@ -1339,6 +1339,15 @@ def launch_game(client_name: str, user: User, server: str,
 
         package = resolve_package(client_name)
 
+        # Kill the app first - a stuck/frozen client won't process the
+        # join intent, so force-stop before relaunching
+        execute_command(
+            f"{shell_prefix()} 'am force-stop {package}'",
+            "kill app"
+        )
+
+        time.sleep(2)
+
         # Bring to foreground
         if not execute_command(
             f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY}'",
