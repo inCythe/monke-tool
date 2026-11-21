@@ -20,4 +20,5 @@ curl -fsSL "https://raw.githubusercontent.com/inCythe/monke-tool/main/monke_tool
 chmod +x monke_tool.py
 
 echo "[*] Starting Monke Tool..."
-python monke_tool.py
+# Use /dev/tty so interactive prompts work even when piped via curl | bash
+python monke_tool.py < /dev/tty

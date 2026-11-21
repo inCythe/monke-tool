@@ -167,12 +167,20 @@ def show_message(message: str, style: str = "yellow", duration: int = 2):
     if duration:
         time.sleep(duration)
 
+def _exit_on_eof():
+    """Exit gracefully when stdin is closed (e.g. piped installer)."""
+    print_centered("Input closed - run the script directly in a terminal", "red")
+    sys.exit(0)
+
 def wait_for_input(message: str = "Press Enter to continue..."):
     """Wait for user input with centered prompt."""
     console.print()
     print_centered(message, "dim")
     console.print()
-    input()
+    try:
+        input()
+    except EOFError:
+        _exit_on_eof()
 
 def centered_prompt(message: str, default: str = None, password: bool = False) -> str:
     """Show a centered prompt and return user input."""
@@ -181,15 +189,18 @@ def centered_prompt(message: str, default: str = None, password: bool = False) -
     if default:
         print_centered(f"(default: {default})", "dim")
     console.print()
-    
+
     # Position cursor in center by calculating approximate position
     width = console.width
     padding = " " * (width // 3)
-    
-    if password:
-        return Prompt.ask(padding, password=True, default=default)
-    else:
-        return Prompt.ask(padding, default=default)
+
+    try:
+        if password:
+            return Prompt.ask(padding, password=True, default=default)
+        else:
+            return Prompt.ask(padding, default=default)
+    except EOFError:
+        _exit_on_eof()
 
 def centered_confirm(message: str, default: str = "n") -> bool:
     """Show a centered confirmation prompt."""
@@ -197,11 +208,14 @@ def centered_confirm(message: str, default: str = "n") -> bool:
     print_centered(message, "bold yellow")
     print_centered("y/n", "bold cyan")
     console.print()
-    
+
     width = console.width
     padding = " " * (width // 3)
-    
-    response = Prompt.ask(padding, choices=["y", "n", "Y", "N"], default=default)
+
+    try:
+        response = Prompt.ask(padding, choices=["y", "n", "Y", "N"], default=default)
+    except EOFError:
+        _exit_on_eof()
     return response.lower() == "y"
 
 def get_uptime() -> str:
