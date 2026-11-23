@@ -46,9 +46,9 @@ CONFIG_FILE = SCRIPT_DIR / "config.json"
 BACKUP_DIR = SCRIPT_DIR / "backups"
 
 # Default values
-DEFAULT_CHECK_INTERVAL = 300
-DEFAULT_DOUBLE_CHECK_INTERVAL = 60
-DEFAULT_DOUBLE_CHECK_COUNT = 2
+DEFAULT_CHECK_INTERVAL = 60
+DEFAULT_DOUBLE_CHECK_INTERVAL = 15
+DEFAULT_DOUBLE_CHECK_COUNT = 1
 DEFAULT_LAUNCH_TIMEOUT = 120
 DEFAULT_WEBHOOK_INTERVAL = 600
 MAX_CONSECUTIVE_FAILURES = 5
@@ -164,14 +164,29 @@ user_statuses: Dict[str, str] = {}
 user_failures: Dict[str, int] = {}
 _status_lock = threading.Lock()
 _monitoring_active = True
+_stop_event = threading.Event()  # Avoids busy-wait polling loops
 _start_time = time.time()  # Track program start time for uptime
 _last_webhook_time = 0  # Track last webhook send time
+
+# Reuse HTTP connections per thread - avoids a new TCP/TLS handshake on
+# every presence check, which is expensive on low-end Android/Termux.
+_thread_local = threading.local()
+
+
+def http_session():
+    """Return a per-thread requests.Session (connection pooling)."""
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _thread_local.session = session
+    return session
 
 # --- HELPER FUNCTIONS ---
 
 def clear_screen():
-    """Clear the console screen."""
-    os.system("clear" if os.name == "posix" else "cls")
+    """Clear the console screen without spawning a subprocess."""
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 def print_centered(text: str, style: str = "bold white") -> None:
     """Print centered text."""
@@ -269,7 +284,6 @@ class User:
     server: str = ""
     client_name: str = ""
     start_time: float = None
-    launch_attempts: int = 0
     last_check: float = None
     consecutive_failures: int = 0
     last_status: str = ""
@@ -291,7 +305,7 @@ class User:
         """Fetch username from Roblox API with retry logic."""
         for attempt in range(3):
             try:
-                response = requests.get(
+                response = http_session().get(
                     f"https://users.roblox.com/v1/users/{user_id}",
                     timeout=10
                 )
@@ -312,7 +326,7 @@ class User:
         url = "https://users.roblox.com/v1/usernames/users"
         for attempt in range(3):
             try:
-                response = requests.post(
+                response = http_session().post(
                     url,
                     json={"usernames": [username]},
                     timeout=10
@@ -1154,7 +1168,7 @@ def check_user_presence(user: User, config: Config) -> bool:
     
     for attempt in range(3):
         try:
-            response = requests.post(
+            response = http_session().post(
                 url, headers=headers, json=payload, timeout=10
             )
             response.raise_for_status()
@@ -1173,7 +1187,7 @@ def check_user_presence(user: User, config: Config) -> bool:
                 for check in range(config.double_check_count):
                     time.sleep(config.double_check_interval)
                     
-                    response = requests.post(
+                    response = http_session().post(
                         url, headers=headers, json=payload, timeout=10
                     )
                     response.raise_for_status()
@@ -1207,7 +1221,7 @@ def check_user_presence_launch(user: User, config: Config, delay: int = 2) -> bo
     payload = {"userIds": [int(user.user_id)]}
     
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response = http_session().post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         
@@ -1276,101 +1290,6 @@ def execute_command(command: str, description: str) -> bool:
         logger.error(f"Error executing {description}: {e}")
         return False
 
-def launch_roblox(client_name: str, user: User, server: str, 
-                  action: str, config: Config, initial_delay: int = None):
-    """Launch Roblox app and join server."""
-    logger.info(f"{action} Roblox for {user.username}")
-    
-    if not server:
-        logger.warning(f"No server for {user.username}")
-        return
-    
-    try:
-        update_user_status(config, user.user_id, action)
-        
-        # Start main activity
-        package = resolve_package(client_name)
-        if not execute_command(
-            f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
-            "start app"
-        ):
-            return
-
-        time.sleep(5)
-
-        # Join server (VIEW action required or Roblox ignores the deep link)
-        if server.isdigit():
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
-        else:
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
-        
-        if not execute_command(join_cmd, "join game"):
-            return
-        
-        user.start_time = time.time()
-        delay = initial_delay if initial_delay is not None else 2
-        
-        # Wait for presence
-        start = time.time()
-        while time.time() - start < config.launch_timeout:
-            if check_user_presence_launch(user, config, delay):
-                return
-            time.sleep(config.launch_timeout // 4)
-            delay = 2
-        
-        logger.warning(f"Launch timeout for {user.username}")
-        update_user_status(config, user.user_id, "Timeout")
-        
-    except Exception as e:
-        logger.error(f"Launch error for {user.username}: {e}")
-        update_user_status(config, user.user_id, "Error")
-
-def launch_game(client_name: str, user: User, server: str, 
-                action: str, config: Config):
-    """Join game when app is running."""
-    logger.info(f"{action} game for {user.username}")
-    
-    if not server:
-        logger.warning(f"No server for {user.username}")
-        return
-    
-    try:
-        update_user_status(config, user.user_id, action)
-
-        package = resolve_package(client_name)
-
-        # Kill the app first - a stuck/frozen client won't process the
-        # join intent, so kill the process before relaunching
-        execute_command(
-            f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
-            "kill app"
-        )
-
-        time.sleep(2)
-
-        # Bring to foreground
-        if not execute_command(
-            f"{shell_prefix()} 'am start -n {package}/{ROBLOX_ACTIVITY}'",
-            "foreground"
-        ):
-            return
-
-        time.sleep(5)
-
-        # Join game
-        if server.isdigit():
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
-        else:
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
-        
-        execute_command(join_cmd, "join game")
-        
-        user.start_time = time.time()
-        
-    except Exception as e:
-        logger.error(f"Game launch error for {user.username}: {e}")
-        update_user_status(config, user.user_id, "Error")
-
 def restart_roblox(client_name: str, user: User, users: List[User],
                    server: str, action: str, config: Config):
     """Force restart Roblox."""
@@ -1434,43 +1353,32 @@ def monitor_user(user: User, config: Config):
         try:
             if not user.server:
                 logger.debug(f"{user.username} has no server, sleeping")
-                time.sleep(config.check_interval)
+                _stop_event.wait(config.check_interval)
                 continue
             
             process_running = check_process_running(user.client_name)
             
             if not process_running:
-                logger.info(f"{user.username} process not running, launching")
-                # Don't increment failures here - process not running is expected sometimes
-                launch_roblox(user.client_name, user, user.server, 
-                             "Launching", config)
-                
+                # Process is dead: restart immediately, no presence re-check.
+                logger.info(f"{user.username} process not running, restarting")
+                restart_roblox(user.client_name, user, config.users,
+                               user.server, "Restarting", config)
             else:
                 online = check_user_presence(user, config)
                 
                 if not online:
-                    # Only increment failures when process is running but user is offline
                     failures = increment_failure(user.user_id)
                     logger.info(f"{user.username} offline (failure {failures}/{config.max_failures})")
                     
                     if failures > config.max_failures:
                         logger.error(f"{user.username} exceeded max failures ({failures})")
                         update_user_status(config, user.user_id, "Failed")
-                        time.sleep(config.check_interval * 2)
+                        _stop_event.wait(config.check_interval * 2)
                         continue
                     
-                    if not check_process_running(user.client_name):
-                        launch_roblox(user.client_name, user, user.server,
-                                     "Launching", config)
-                    elif user.launch_attempts == 0:
-                        launch_game(user.client_name, user, user.server,
-                                   "Relaunching", config)
-                        user.launch_attempts = 1
-                    elif user.launch_attempts == 1:
-                        restart_roblox(user.client_name, user, config.users,
-                                      user.server, "Restarting", config)
-                        user.launch_attempts = 0
-                        
+                    # Process is up but user is offline: force restart.
+                    restart_roblox(user.client_name, user, config.users,
+                                   user.server, "Restarting", config)
                 else:
                     # User is online - reset failures
                     with _status_lock:
@@ -1478,16 +1386,14 @@ def monitor_user(user: User, config: Config):
                     
                     if get_user_status(user.user_id) != "Online":
                         update_user_status(config, user.user_id, "Online")
-                    
-                    user.launch_attempts = 0
             
             user.last_check = time.time()
-            time.sleep(config.check_interval)
+            _stop_event.wait(config.check_interval)
             
         except Exception as e:
             logger.exception(f"Error monitoring {user.username}: {e}")
             update_user_status(config, user.user_id, "Error")
-            time.sleep(60)
+            _stop_event.wait(60)
 
 def initial_launch(user: User, config: Config):
     """Initial launch when monitoring starts."""
@@ -1503,21 +1409,14 @@ def initial_launch(user: User, config: Config):
         process_running = check_process_running(user.client_name)
         
         if not process_running:
-            logger.info(f"{user.username} process not running")
-            launch_roblox(user.client_name, user, user.server,
-                         "Launching", config, initial_delay=5)
+            logger.info(f"{user.username} process not running, restarting")
+            restart_roblox(user.client_name, user, config.users,
+                           user.server, "Restarting", config)
             
         elif not check_user_presence(user, config):
-            logger.info(f"{user.username} offline but process running")
-            launch_game(user.client_name, user, user.server,
-                       "Relaunching", config)
-            
-            # Wait for online
-            start = time.time()
-            while time.time() - start < config.launch_timeout:
-                if check_user_presence_launch(user, config, delay=5):
-                    return
-                time.sleep(config.launch_timeout // 4)
+            logger.info(f"{user.username} offline but process running, restarting")
+            restart_roblox(user.client_name, user, config.users,
+                           user.server, "Restarting", config)
             
         else:
             logger.info(f"{user.username} already online")
@@ -1535,6 +1434,7 @@ def monitor_all_users(config: Config):
     """Start monitoring all users."""
     global _monitoring_active
     _monitoring_active = True
+    _stop_event.clear()
     
     logger.info("Starting monitoring for all users")
     
@@ -1597,19 +1497,20 @@ def monitor_all_users(config: Config):
             console.print()
             print_centered(f"Uptime: {get_uptime()} | Monitoring active - Press Ctrl+C to stop", "dim")
             console.print()
-            time.sleep(5)
+            # Redrawing the full Rich table is relatively heavy on Termux.
+            _stop_event.wait(15)
     
     display_thread = threading.Thread(target=status_display, name="Display")
     display_thread.daemon = True
     display_thread.start()
     
-    # Wait for interrupt
+    # Wait for interrupt - block on an event instead of polling every second
     try:
-        while _monitoring_active:
-            time.sleep(1)
+        _stop_event.wait()
     except KeyboardInterrupt:
         logger.info("Monitoring stopped by user")
         _monitoring_active = False
+        _stop_event.set()
         show_message("Monitoring stopped", "yellow")
 
 # --- WEBHOOK FUNCTIONS ---
@@ -1730,19 +1631,17 @@ def send_webhook(config: Config):
 def periodic_webhook_thread(config: Config):
     """Periodic webhook thread that sends updates at configured intervals."""
     logger.info("Periodic webhook thread started")
-    time.sleep(config.webhook_interval)  # Wait for first interval
+    if _stop_event.wait(config.webhook_interval):  # Wait for first interval
+        return
     
     while _monitoring_active:
         try:
             send_webhook(config)
-            # Wait for next interval
-            for _ in range(int(config.webhook_interval)):
-                if not _monitoring_active:
-                    break
-                time.sleep(1)
         except Exception as e:
             logger.error(f"Periodic webhook thread error: {e}")
-            time.sleep(60)
+        # One blocking wait per interval instead of waking every second
+        if _stop_event.wait(config.webhook_interval):
+            break
 
 # --- DISPLAY FUNCTIONS ---
 

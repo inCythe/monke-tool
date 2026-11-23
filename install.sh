@@ -4,15 +4,22 @@
 
 set -e
 
-echo "[*] Updating packages..."
-yes | pkg update -y
-yes | pkg upgrade -y
+# Only bootstrap what's actually missing - repeated runs just update the tool.
+if command -v python >/dev/null 2>&1; then
+    echo "[*] Python already installed - skipping package setup."
+else
+    echo "[*] Installing Python..."
+    yes | pkg update -y
+    yes | pkg upgrade -y
+    yes | pkg install -y python python-pip
+fi
 
-echo "[*] Installing Python..."
-yes | pkg install -y python python-pip
-
-echo "[*] Installing Python dependencies..."
-pip install requests discord-webhook rich
+if python -c 'import requests, discord_webhook, rich' >/dev/null 2>&1; then
+    echo "[*] Dependencies already installed - skipping pip install."
+else
+    echo "[*] Installing Python dependencies..."
+    yes | pip install requests discord-webhook rich
+fi
 
 echo "[*] Downloading Monke Tool..."
 cd "$HOME" || exit 1
