@@ -1289,6 +1289,16 @@ def execute_command(command: str, description: str) -> bool:
         logger.error(f"Error executing {description}: {e}")
         return False
 
+def kill_roblox(client_name: str) -> bool:
+    """Kill the Roblox process so the next launch starts completely fresh."""
+    package = resolve_package(client_name)
+    if not package:
+        return False
+    return execute_command(
+        f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
+        f"kill {package}"
+    )
+
 def launch_roblox(client_name: str, user: User, server: str,
                   action: str, config: Config, initial_delay: int = None):
     """Launch Roblox app and join server."""
@@ -1394,50 +1404,46 @@ def monitor_user(user: User, config: Config):
     """Main monitoring loop for a user."""
     thread_name = f"Monitor-{user.username}"
     threading.current_thread().name = thread_name
-    
+
     logger.info(f"Starting monitor for {user.username}")
-    
+
     while _monitoring_active:
         try:
             if not user.server:
                 logger.debug(f"{user.username} has no server, sleeping")
                 _stop_event.wait(config.check_interval)
                 continue
-            
-            process_running = check_process_running(user.client_name)
-            
-            if not process_running:
-                # Process is dead: launch immediately, no presence re-check.
-                logger.info(f"{user.username} process not running, launching")
+
+            # No process-state check: if presence says offline, kill and
+            # relaunch fresh instead of inspecting whether pidof finds it.
+            online = check_user_presence(user, config)
+
+            if not online:
+                failures = increment_failure(user.user_id)
+                logger.info(f"{user.username} offline (failure {failures}/{config.max_failures})")
+
+                if failures > config.max_failures:
+                    logger.error(f"{user.username} exceeded max failures ({failures})")
+                    update_user_status(config, user.user_id, "Failed")
+                    _stop_event.wait(config.check_interval * 2)
+                    continue
+
+                logger.info(f"{user.username} killing process before launch")
+                kill_roblox(user.client_name)
+                time.sleep(2)
                 launch_roblox(user.client_name, user, user.server,
                              "Launching", config)
             else:
-                online = check_user_presence(user, config)
-                
-                if not online:
-                    failures = increment_failure(user.user_id)
-                    logger.info(f"{user.username} offline (failure {failures}/{config.max_failures})")
-                    
-                    if failures > config.max_failures:
-                        logger.error(f"{user.username} exceeded max failures ({failures})")
-                        update_user_status(config, user.user_id, "Failed")
-                        _stop_event.wait(config.check_interval * 2)
-                        continue
-                    
-                    # Process is up but user is offline: force restart.
-                    restart_roblox(user.client_name, user, config.users,
-                                   user.server, "Restarting", config)
-                else:
-                    # User is online - reset failures
-                    with _status_lock:
-                        user_failures[user.user_id] = 0
-                    
-                    if get_user_status(user.user_id) != "Online":
-                        update_user_status(config, user.user_id, "Online")
-            
+                # User is online - reset failures
+                with _status_lock:
+                    user_failures[user.user_id] = 0
+
+                if get_user_status(user.user_id) != "Online":
+                    update_user_status(config, user.user_id, "Online")
+
             user.last_check = time.time()
             _stop_event.wait(config.check_interval)
-            
+
         except Exception as e:
             logger.exception(f"Error monitoring {user.username}: {e}")
             update_user_status(config, user.user_id, "Error")
@@ -1454,17 +1460,12 @@ def initial_launch(user: User, config: Config):
         
         update_user_status(config, user.user_id, "Initializing")
         
-        process_running = check_process_running(user.client_name)
-        
-        if not process_running:
-            logger.info(f"{user.username} process not running")
+        if not check_user_presence(user, config):
+            logger.info(f"{user.username} offline, killing process before launch")
+            kill_roblox(user.client_name)
+            time.sleep(2)
             launch_roblox(user.client_name, user, user.server,
                          "Launching", config, initial_delay=5)
-            
-        elif not check_user_presence(user, config):
-            logger.info(f"{user.username} offline but process running, restarting")
-            restart_roblox(user.client_name, user, config.users,
-                           user.server, "Restarting", config)
             
         else:
             logger.info(f"{user.username} already online")
