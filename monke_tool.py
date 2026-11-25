@@ -1386,68 +1386,56 @@ def monitor_user(user: User, config: Config):
             _stop_event.wait(60)
 
 def initial_launch(user: User, config: Config):
-    """Initial launch when monitoring starts."""
+    """Initial launch when monitoring starts: kill the client, then launch it fresh."""
     logger.info(f"Initial launch for {user.username}")
-    
+
     try:
         if not user.server:
             logger.warning(f"{user.username} has no server")
             return
-        
+
         update_user_status(config, user.user_id, "Initializing")
-        
-        if not check_user_presence(user, config):
-            logger.info(f"{user.username} offline, killing process before launch")
 
-            package = resolve_package(user.client_name)
-            execute_command(
-                f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
-                f"kill {package}"
-            )
-            time.sleep(2)
+        package = resolve_package(user.client_name)
+        execute_command(
+            f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
+            f"kill {package}"
+        )
+        time.sleep(2)
 
-            update_user_status(config, user.user_id, "Launching")
-            if not execute_command(
-                f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
-                "start app"
-            ):
-                return
+        update_user_status(config, user.user_id, "Launching")
+        if not execute_command(
+            f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
+            "start app"
+        ):
+            return
 
-            time.sleep(5)
+        time.sleep(5)
 
-            # VIEW action required or Roblox ignores the deep link
-            if user.server.isdigit():
-                join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={user.server}'"
-            else:
-                join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{user.server}\"'"
-
-            if not execute_command(join_cmd, "join game"):
-                return
-
-            user.start_time = time.time()
-
-            # Wait for presence
-            start = time.time()
-            while time.time() - start < config.launch_timeout:
-                if check_user_presence_launch(user, config, delay=5):
-                    return
-                time.sleep(config.launch_timeout // 4)
-
-            logger.warning(f"Launch timeout for {user.username}")
-            update_user_status(config, user.user_id, "Timeout")
-            
+        # VIEW action required or Roblox ignores the deep link
+        if user.server.isdigit():
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={user.server}'"
         else:
-            logger.info(f"{user.username} already online")
-            with _status_lock:
-                user_failures[user.user_id] = 0
-            if get_user_status(user.user_id) != "Online":
-                update_user_status(config, user.user_id, "Online")
-            time.sleep(5)
-            
+            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{user.server}\"'"
+
+        if not execute_command(join_cmd, "join game"):
+            return
+
+        user.start_time = time.time()
+
+        # Wait for presence
+        start = time.time()
+        while time.time() - start < config.launch_timeout:
+            if check_user_presence_launch(user, config, delay=5):
+                return
+            time.sleep(config.launch_timeout // 4)
+
+        logger.warning(f"Launch timeout for {user.username}")
+        update_user_status(config, user.user_id, "Timeout")
+
     except Exception as e:
         logger.error(f"Initial launch error for {user.username}: {e}")
         update_user_status(config, user.user_id, "Error")
-
 def monitor_all_users(config: Config):
     """Start monitoring all users."""
     global _monitoring_active
