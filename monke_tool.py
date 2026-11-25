@@ -1289,65 +1289,6 @@ def execute_command(command: str, description: str) -> bool:
         logger.error(f"Error executing {description}: {e}")
         return False
 
-def kill_roblox(client_name: str) -> bool:
-    """Kill the Roblox process so the next launch starts completely fresh."""
-    package = resolve_package(client_name)
-    if not package:
-        return False
-    return execute_command(
-        f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
-        f"kill {package}"
-    )
-
-def launch_roblox(client_name: str, user: User, server: str,
-                  action: str, config: Config, initial_delay: int = None):
-    """Launch Roblox app and join server."""
-    logger.info(f"{action} Roblox for {user.username}")
-
-    if not server:
-        logger.warning(f"No server for {user.username}")
-        return
-
-    try:
-        update_user_status(config, user.user_id, action)
-
-        # Start main activity
-        package = resolve_package(client_name)
-        if not execute_command(
-            f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
-            "start app"
-        ):
-            return
-
-        time.sleep(5)
-
-        # Join server (VIEW action required or Roblox ignores the deep link)
-        if server.isdigit():
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={server}'"
-        else:
-            join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{server}\"'"
-
-        if not execute_command(join_cmd, "join game"):
-            return
-
-        user.start_time = time.time()
-        delay = initial_delay if initial_delay is not None else 2
-
-        # Wait for presence
-        start = time.time()
-        while time.time() - start < config.launch_timeout:
-            if check_user_presence_launch(user, config, delay):
-                return
-            time.sleep(config.launch_timeout // 4)
-            delay = 2
-
-        logger.warning(f"Launch timeout for {user.username}")
-        update_user_status(config, user.user_id, "Timeout")
-
-    except Exception as e:
-        logger.error(f"Launch error for {user.username}: {e}")
-        update_user_status(config, user.user_id, "Error")
-
 def restart_roblox(client_name: str, user: User, users: List[User],
                    server: str, action: str, config: Config):
     """Force restart Roblox."""
@@ -1414,8 +1355,6 @@ def monitor_user(user: User, config: Config):
                 _stop_event.wait(config.check_interval)
                 continue
 
-            # No process-state check: if presence says offline, kill and
-            # relaunch fresh instead of inspecting whether pidof finds it.
             online = check_user_presence(user, config)
 
             if not online:
@@ -1428,11 +1367,8 @@ def monitor_user(user: User, config: Config):
                     _stop_event.wait(config.check_interval * 2)
                     continue
 
-                logger.info(f"{user.username} killing process before launch")
-                kill_roblox(user.client_name)
-                time.sleep(2)
-                launch_roblox(user.client_name, user, user.server,
-                             "Launching", config)
+                restart_roblox(user.client_name, user, config.users,
+                               user.server, "Restarting", config)
             else:
                 # User is online - reset failures
                 with _status_lock:
@@ -1462,10 +1398,43 @@ def initial_launch(user: User, config: Config):
         
         if not check_user_presence(user, config):
             logger.info(f"{user.username} offline, killing process before launch")
-            kill_roblox(user.client_name)
+
+            package = resolve_package(user.client_name)
+            execute_command(
+                f"{shell_prefix()} 'kill $(pidof {package}) 2>/dev/null'",
+                f"kill {package}"
+            )
             time.sleep(2)
-            launch_roblox(user.client_name, user, user.server,
-                         "Launching", config, initial_delay=5)
+
+            update_user_status(config, user.user_id, "Launching")
+            if not execute_command(
+                f"{shell_prefix()} 'am start -a android.intent.action.MAIN {package}'",
+                "start app"
+            ):
+                return
+
+            time.sleep(5)
+
+            # VIEW action required or Roblox ignores the deep link
+            if user.server.isdigit():
+                join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d roblox://placeID={user.server}'"
+            else:
+                join_cmd = f"{shell_prefix()} 'am start -a android.intent.action.VIEW -n {package}/{ROBLOX_ACTIVITY} -d \"{user.server}\"'"
+
+            if not execute_command(join_cmd, "join game"):
+                return
+
+            user.start_time = time.time()
+
+            # Wait for presence
+            start = time.time()
+            while time.time() - start < config.launch_timeout:
+                if check_user_presence_launch(user, config, delay=5):
+                    return
+                time.sleep(config.launch_timeout // 4)
+
+            logger.warning(f"Launch timeout for {user.username}")
+            update_user_status(config, user.user_id, "Timeout")
             
         else:
             logger.info(f"{user.username} already online")
